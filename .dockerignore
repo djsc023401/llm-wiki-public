@@ -1,0 +1,15 @@
+.git
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+node_modules/
+dist/
+build/
+.codex-remote-attachments/
+agent_private.md
+.env
+.env.*
+!*.env.example

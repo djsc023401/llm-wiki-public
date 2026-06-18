@@ -1,0 +1,168 @@
+name: llm-wiki-app
+
+services:
+  app-db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: llm_wiki
+      POSTGRES_USER: llm_wiki
+      POSTGRES_PASSWORD: ${APP_DB_PASSWORD}
+      PGDATA: /var/lib/postgresql/data/pgdata
+      TZ: Asia/Seoul
+    volumes:
+      - ./postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U llm_wiki -d llm_wiki"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - app
+
+  api:
+    build:
+      context: ${LLM_WIKI_SOURCE_ROOT:?set LLM_WIKI_SOURCE_ROOT}
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      app-db:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+        required: false
+    env_file:
+      - ./.env
+    user: "${APP_UID:-1000}:${APP_GID:-1000}"
+    command: ["api", "--host", "0.0.0.0", "--port", "8080"]
+    volumes:
+      - ${LLM_WIKI_MIRROR_ROOT:-./mirror}:/vault
+      - ./data:/data
+      - ./backups:/backups
+    ports:
+      - "${APP_BIND_ADDRESS:-127.0.0.1}:${APP_PORT:-8080}:8080"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 10
+    networks:
+      - app
+
+  worker:
+    build:
+      context: ${LLM_WIKI_SOURCE_ROOT:?set LLM_WIKI_SOURCE_ROOT}
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      app-db:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+        required: false
+    env_file:
+      - ./.env
+    user: "${APP_UID:-1000}:${APP_GID:-1000}"
+    command: ["worker", "--loop", "--interval", "${WORKER_INTERVAL:-15}", "--runner", "${WORKER_RUNNER:-dry-run}"]
+    volumes:
+      - ${LLM_WIKI_MIRROR_ROOT:-./mirror}:/vault:ro
+      - ./data:/data
+    profiles:
+      - worker
+    networks:
+      - app
+
+  telegram-poller:
+    build:
+      context: ${LLM_WIKI_SOURCE_ROOT:?set LLM_WIKI_SOURCE_ROOT}
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      app-db:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+        required: false
+    env_file:
+      - ./.env
+    user: "${APP_UID:-1000}:${APP_GID:-1000}"
+    command: ["telegram-poll", "--interval", "${TELEGRAM_POLLING_INTERVAL_SECONDS:-2}"]
+    volumes:
+      - ${LLM_WIKI_MIRROR_ROOT:-./mirror}:/vault
+      - ./data:/data
+    profiles:
+      - telegram
+    networks:
+      - app
+
+  restore-smoke-db:
+    image: postgres:17-alpine
+    restart: "no"
+    environment:
+      POSTGRES_DB: llm_wiki_restore
+      POSTGRES_USER: llm_wiki_restore
+      POSTGRES_PASSWORD: ${RESTORE_SMOKE_DB_PASSWORD:-llm-wiki-restore-smoke}
+      TZ: Asia/Seoul
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U llm_wiki_restore -d llm_wiki_restore"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    profiles:
+      - restore-smoke
+    networks:
+      - app
+
+  minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-llm-wiki-minio}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-change-me-minio-secret}
+      TZ: Asia/Seoul
+    volumes:
+      - ./minio:/data
+    ports:
+      - "${MINIO_BIND_ADDRESS:-127.0.0.1}:${MINIO_API_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_BIND_ADDRESS:-127.0.0.1}:${MINIO_CONSOLE_PORT:-9001}:9001"
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    profiles:
+      - minio
+    networks:
+      - app
+
+  minio-init:
+    image: minio/mc:latest
+    restart: "no"
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-llm-wiki-minio}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-change-me-minio-secret}
+      MINIO_BUCKET: ${MINIO_BUCKET:-llm-wiki}
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        set -eu
+        mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD"
+        mc mb --ignore-existing "local/$$MINIO_BUCKET"
+        for prefix in raw assets extracted archive; do
+          printf '' | mc pipe "local/$$MINIO_BUCKET/$$prefix/.keep"
+        done
+    profiles:
+      - minio
+    networks:
+      - app
+
+networks:
+  app:
+    driver: bridge

@@ -1,0 +1,22 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+node_modules/
+dist/
+build/
+.codex-remote-attachments/
+*.spec
+.env
+.env.*
+!*.env.example
+agent_private.md
+
+# Runtime directories created when the compose template is run from this tree.
+/backups/
+/data/
+/minio/
+/mirror/
+/postgres/
